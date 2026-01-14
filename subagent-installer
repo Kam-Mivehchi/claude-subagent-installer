@@ -1,0 +1,428 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# =============================================================================
+# Claude Code Subagent Installer
+# Fetches and installs subagents from VoltAgent/awesome-claude-code-subagents
+# =============================================================================
+
+# Constants
+readonly REPO_API="https://api.github.com/repos/VoltAgent/awesome-claude-code-subagents/contents"
+readonly RAW_BASE="https://raw.githubusercontent.com/VoltAgent/awesome-claude-code-subagents/main"
+readonly GLOBAL_AGENTS="$HOME/.claude/agents"
+readonly LOCAL_AGENTS=".claude/agents"
+
+# Colors (for non-gum output)
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[0;33m'
+readonly DIM='\033[2m'
+readonly NC='\033[0m' # No Color
+
+# Global flags
+FORCE=false
+
+# =============================================================================
+# Utility Functions
+# =============================================================================
+
+print_error() {
+    echo -e "${RED}Error:${NC} $1" >&2
+}
+
+print_success() {
+    echo -e "${GREEN}✓${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}Warning:${NC} $1"
+}
+
+print_info() {
+    echo -e "${DIM}$1${NC}"
+}
+
+# =============================================================================
+# Dependency Checking
+# =============================================================================
+
+check_dependencies() {
+    local missing=()
+
+    if ! command -v gum &> /dev/null; then
+        missing+=("gum")
+    fi
+
+    if ! command -v curl &> /dev/null; then
+        missing+=("curl")
+    fi
+
+    if ! command -v jq &> /dev/null; then
+        missing+=("jq")
+    fi
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        print_error "Missing required dependencies: ${missing[*]}"
+        echo ""
+        echo "Install instructions:"
+        for dep in "${missing[@]}"; do
+            case "$dep" in
+                gum)
+                    echo "  gum:  brew install gum  (or see https://github.com/charmbracelet/gum)"
+                    ;;
+                curl)
+                    echo "  curl: brew install curl (or apt-get install curl)"
+                    ;;
+                jq)
+                    echo "  jq:   brew install jq   (or apt-get install jq)"
+                    ;;
+            esac
+        done
+        exit 1
+    fi
+}
+
+# =============================================================================
+# GitHub API Functions
+# =============================================================================
+
+fetch_categories() {
+    local response
+    response=$(curl -sS "${REPO_API}/categories" 2>/dev/null) || {
+        print_error "Failed to fetch categories from GitHub API"
+        exit 1
+    }
+
+    # Check for rate limiting
+    if echo "$response" | jq -e '.message' &>/dev/null; then
+        local message
+        message=$(echo "$response" | jq -r '.message')
+        if [[ "$message" == *"rate limit"* ]]; then
+            print_error "GitHub API rate limit exceeded. Please wait a few minutes and try again."
+            exit 1
+        fi
+        print_error "GitHub API error: $message"
+        exit 1
+    fi
+
+    echo "$response" | jq -r '.[] | select(.type == "dir") | .name' | sort
+}
+
+fetch_agents_in_category() {
+    local category="$1"
+    local response
+    response=$(curl -sS "${REPO_API}/categories/${category}" 2>/dev/null) || {
+        print_error "Failed to fetch agents from category: $category"
+        return 1
+    }
+
+    # Return .md files excluding README.md
+    echo "$response" | jq -r '.[] | select(.type == "file" and .name != "README.md" and (.name | endswith(".md"))) | .name' | sort
+}
+
+download_agent_content() {
+    local category="$1"
+    local agent_file="$2"
+    local url="${RAW_BASE}/categories/${category}/${agent_file}"
+
+    curl -sS "$url" 2>/dev/null || {
+        print_error "Failed to download agent: $agent_file"
+        return 1
+    }
+}
+
+# =============================================================================
+# Installed Agents Detection
+# =============================================================================
+
+get_installed_agents() {
+    local scope="$1"  # "global" or "local"
+    local agents_dir
+
+    if [[ "$scope" == "global" ]]; then
+        agents_dir="$GLOBAL_AGENTS"
+    else
+        agents_dir="$LOCAL_AGENTS"
+    fi
+
+    if [[ -d "$agents_dir" ]]; then
+        find "$agents_dir" -maxdepth 1 -name "*.md" -type f -exec basename {} \; 2>/dev/null | sort
+    fi
+}
+
+is_agent_installed() {
+    local agent_name="$1"
+    local global_installed
+    local local_installed
+
+    global_installed=$(get_installed_agents "global")
+    local_installed=$(get_installed_agents "local")
+
+    if echo "$global_installed" | grep -q "^${agent_name}$" || \
+       echo "$local_installed" | grep -q "^${agent_name}$"; then
+        return 0
+    fi
+    return 1
+}
+
+get_agent_install_location() {
+    local agent_name="$1"
+    local locations=()
+
+    if [[ -f "${GLOBAL_AGENTS}/${agent_name}" ]]; then
+        locations+=("global")
+    fi
+    if [[ -f "${LOCAL_AGENTS}/${agent_name}" ]]; then
+        locations+=("local")
+    fi
+
+    echo "${locations[*]}"
+}
+
+# =============================================================================
+# Interactive Menus
+# =============================================================================
+
+show_category_menu() {
+    local categories
+    categories=$(fetch_categories)
+
+    if [[ -z "$categories" ]]; then
+        print_error "No categories found"
+        exit 1
+    fi
+
+    echo "$categories" | gum choose --header "Select a category:" --height 15
+}
+
+show_agent_menu() {
+    local category="$1"
+    local agents
+    agents=$(fetch_agents_in_category "$category")
+
+    if [[ -z "$agents" ]]; then
+        print_error "No agents found in category: $category"
+        return 1
+    fi
+
+    # Build menu items with installation status
+    local menu_items=()
+    while IFS= read -r agent; do
+        [[ -z "$agent" ]] && continue
+        if is_agent_installed "$agent"; then
+            local locations
+            locations=$(get_agent_install_location "$agent")
+            menu_items+=("${agent} [installed: ${locations}]")
+        else
+            menu_items+=("$agent")
+        fi
+    done <<< "$agents"
+
+    # Use gum choose with the menu items
+    printf '%s\n' "${menu_items[@]}" | gum choose --header "Select an agent from ${category}:" --height 15
+}
+
+prompt_scope() {
+    gum choose --header "Where do you want to install this agent?" \
+        "Global (~/.claude/agents/)" \
+        "Local (./.claude/agents/)"
+}
+
+confirm_continue() {
+    gum confirm "Add another agent?"
+}
+
+# =============================================================================
+# Installation Logic
+# =============================================================================
+
+install_agent() {
+    local category="$1"
+    local agent_file="$2"
+    local scope="$3"  # "global" or "local"
+
+    # Clean agent filename (remove [installed: ...] suffix if present)
+    agent_file=$(echo "$agent_file" | sed 's/ \[installed:.*\]$//')
+
+    local agents_dir
+    if [[ "$scope" == "global" ]]; then
+        agents_dir="$GLOBAL_AGENTS"
+    else
+        agents_dir="$LOCAL_AGENTS"
+    fi
+
+    local target_file="${agents_dir}/${agent_file}"
+
+    # Check if agent already exists
+    if [[ -f "$target_file" ]]; then
+        if [[ "$FORCE" != true ]]; then
+            print_warning "Agent '${agent_file}' already exists at ${target_file}"
+            print_info "Use --force to overwrite"
+            return 1
+        else
+            print_warning "Overwriting existing agent: ${agent_file}"
+        fi
+    fi
+
+    # Create directory if needed
+    mkdir -p "$agents_dir"
+
+    # Download and save agent
+    gum spin --spinner dot --title "Downloading ${agent_file}..." -- sleep 0.5
+    local content
+    content=$(download_agent_content "$category" "$agent_file") || return 1
+
+    echo "$content" > "$target_file"
+    print_success "Installed ${agent_file} to ${target_file}"
+}
+
+# =============================================================================
+# CLI Argument Parsing
+# =============================================================================
+
+show_help() {
+    cat << 'EOF'
+Claude Code Subagent Installer
+
+Fetches and installs subagents from the awesome-claude-code-subagents repository.
+
+USAGE:
+    subagent-installer [OPTIONS]
+
+OPTIONS:
+    -f, --force    Overwrite existing agents without prompting
+    -h, --help     Show this help message
+
+EXAMPLES:
+    subagent-installer           # Interactive mode
+    subagent-installer --force   # Allow overwriting existing agents
+
+REPOSITORY:
+    https://github.com/VoltAgent/awesome-claude-code-subagents
+
+EOF
+}
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -f|--force)
+                FORCE=true
+                shift
+                ;;
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            *)
+                print_error "Unknown option: $1"
+                echo "Use --help for usage information"
+                exit 1
+                ;;
+        esac
+    done
+}
+
+# =============================================================================
+# Main Loop
+# =============================================================================
+
+main_loop() {
+    while true; do
+        echo ""
+        gum style --border normal --padding "0 1" --border-foreground 212 \
+            "Claude Code Subagent Installer"
+        echo ""
+
+        # Select category
+        local category
+        category=$(show_category_menu) || exit 1
+
+        if [[ -z "$category" ]]; then
+            print_info "No category selected. Exiting."
+            exit 0
+        fi
+
+        echo ""
+        print_info "Category: $category"
+        echo ""
+
+        # Select agent
+        local agent_selection
+        agent_selection=$(show_agent_menu "$category") || continue
+
+        if [[ -z "$agent_selection" ]]; then
+            print_info "No agent selected."
+            if ! confirm_continue; then
+                break
+            fi
+            continue
+        fi
+
+        # Extract clean agent filename
+        local agent_file
+        agent_file=$(echo "$agent_selection" | sed 's/ \[installed:.*\]$//')
+
+        # Check if trying to install an already-installed agent without --force
+        local should_force=$FORCE
+        if is_agent_installed "$agent_file" && [[ "$FORCE" != true ]]; then
+            local locations
+            locations=$(get_agent_install_location "$agent_file")
+            print_warning "Agent '${agent_file}' is already installed (${locations})"
+
+            if ! gum confirm "Do you want to reinstall/overwrite it?"; then
+                if ! confirm_continue; then
+                    break
+                fi
+                continue
+            fi
+            # Temporarily enable force for this installation
+            should_force=true
+        fi
+
+        echo ""
+
+        # Select scope
+        local scope_selection
+        scope_selection=$(prompt_scope) || continue
+
+        local scope
+        if [[ "$scope_selection" == *"Global"* ]]; then
+            scope="global"
+        else
+            scope="local"
+        fi
+
+        echo ""
+
+        # Install the agent (temporarily override FORCE if user confirmed)
+        local original_force=$FORCE
+        FORCE=$should_force
+        install_agent "$category" "$agent_file" "$scope"
+        FORCE=$original_force
+
+        echo ""
+
+        # Ask to continue
+        if ! confirm_continue; then
+            break
+        fi
+    done
+
+    echo ""
+    print_success "Done! Your agents are ready to use."
+    print_info "Use '/agents' in Claude Code to see your installed agents."
+}
+
+# =============================================================================
+# Main Entry Point
+# =============================================================================
+
+main() {
+    parse_args "$@"
+    check_dependencies
+    main_loop
+}
+
+main "$@"
