@@ -19,7 +19,7 @@ For experienced users who want to get going fast:
 brew install gum curl jq
 
 # Clone and run
-git clone https://github.com/YOUR_USERNAME/claude-subagent-installer.git
+git@github.com:Kam-Mivehchi/claude-subagent-installer.git
 cd claude-subagent-installer
 ./subagent-installer
 ```
