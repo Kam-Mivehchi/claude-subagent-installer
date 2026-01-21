@@ -53,6 +53,7 @@ That's it! Follow the interactive prompts to install your first subagent.
   - [Command Line Options](#command-line-options)
   - [Examples](#examples)
 - [How It Works](#gear-how-it-works)
+- [Roadmap](#roadmap)
 - [Available Categories](#card_file_box-available-categories)
 - [Troubleshooting](#ambulance-troubleshooting)
 - [Contributing](#handshake-contributing)
@@ -237,6 +238,22 @@ Displays usage information and available options.
 | **Local** | `./.claude/agents/` | Project-specific agents |
 
 After installation, use `/agents` in Claude Code to see your installed agents.
+
+---
+
+## Roadmap
+
+Planned features and improvements:
+
+- [ ] **Multi-select installation** - Select multiple agents at once, assign global/local environment per agent
+- [ ] **Overwrite confirmation** - Prompt before overwriting existing agents (currently requires `--force` flag)
+- [ ] **Homebrew formula** - Install via `brew install subagent-installer` with automatic dependency management
+- [ ] **Uninstall command** - Remove installed agents (`--uninstall` or `-u` flag)
+- [ ] **Update command** - Refresh agents from source to get latest versions (`--update`)
+- [ ] **List command** - Show currently installed agents with their locations (`--list` or `-l`)
+- [ ] **Search/filter** - Filter agents by name or keyword before selecting
+- [ ] **Preview mode** - View agent description/content before installing
+- [ ] **Favorites/presets** - Save commonly-used agent bundles for quick reinstall
 
 ---
 
